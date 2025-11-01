@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>IMPOSTOR Game</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; text-align: center; background: #111; color: #eee; padding: 2em; }
+    input, button { padding: 0.5em 1em; margin: 0.5em; font-size: 1em; border-radius: 5px; border: none; }
+    button { background: #444; color: #fff; cursor: pointer; }
+    button:hover { background: #666; }
+    .hidden { display: none; }
+    .fade { transition: opacity 0.5s ease-in-out; }
+    .spinner { animation: spin 2s linear infinite; display: inline-block; margin-top: 1em; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    #playerList p { margin: 0.2em 0; }
+    #voteButtons button { display: inline-block; margin: 0.2em; }
+    #leaderboard p { margin: 0.2em 0; }
+  </style>
+</head>
+<body>
+  <h1>🎭 IMPOSTOR Game</h1>
+
+  <div id="menu">
+    <button onclick="hostGame()">Host Game</button>
+    <button onclick="joinGame()">Join Game</button>
+  </div>
+
+  <div id="setup" class="hidden">
+    <p id="gameCodeDisplay"></p>
+    <input id="playerName" placeholder="Your name" />
+    <button onclick="submitPlayer()">Join</button>
+    <div id="playerList"></div>
+    <input id="roundsInput" type="number" value="3" min="1" />
+    <button onclick="startGame()">Start Game</button>
+  </div>
+
+  <div id="game" class="hidden">
+    <h2 id="roleText"></h2>
+    <div id="hintPhase" class="hidden">
+      <p id="currentPlayer"></p>
+      <input id="hintInput" placeholder="Enter your hint" />
+      <button onclick="submitHint()">Submit Hint</button>
+      <p id="timerDisplay"></p>
+    </div>
+    <div id="votePhase" class="hidden">
+      <h3>Vote for the IMPOSTOR</h3>
+      <div id="voteButtons"></div>
+    </div>
+    <div id="spinnerPhase" class="hidden">
+      <h3>🌀 Tie! Spinning...</h3>
+      <div class="spinner">🔄</div>
+      <p id="spinnerResult"></p>
+    </div>
+    <div id="revealPhase" class="hidden">
+      <h2 id="revealText"></h2>
+      <button onclick="nextRound()">Next Round</button>
+    </div>
+    <div id="endGame" class="hidden">
+      <h2>🏆 Final Leaderboard</h2>
+      <div id="leaderboard"></div>
+    </div>
+  </div>
+
+  <script>
+    // Simple client-only implementation (falls back to local-play) so the site can run without extra setup.
+
+    // If you want to wire WebSocket multiplayer later, replace this with a proper server URL.
+    // const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
+
+    let gameCode = "";
+    let players = [];
+    let scores = {};
+    let playerName = "";
+    let isHost = false;
+    let impostor = "";
+    let round = 1;
+    let totalRounds = 3;
+    let hintRound = 1;
+    let hintIndex = 0;
+    let hints = [];
+    let votes = {};
+
+    function hostGame() {
+      gameCode = Math.floor(10000000 + Math.random() * 90000000).toString();
+      isHost = true;
+      document.getElementById("menu").classList.add("hidden");
+      document.getElementById("setup").classList.remove("hidden");
+      document.getElementById("gameCodeDisplay").textContent = "Game Code: " + gameCode;
+    }
+
+    function joinGame() {
+      gameCode = prompt("Enter game code:");
+      document.getElementById("menu").classList.add("hidden");
+      document.getElementById("setup").classList.remove("hidden");
+      document.getElementById("gameCodeDisplay").textContent = "Game Code: " + gameCode;
+    }
+
+    function submitPlayer() {
+      const nameInput = document.getElementById("playerName").value.trim();
+      if (!nameInput || players.includes(nameInput)) return;
+      players.push(nameInput);
+      scores[nameInput] = 0;
+      const p = document.createElement("p");
+      p.textContent = nameInput;
+      document.getElementById("playerList").appendChild(p);
+      document.getElementById("playerName").value = "";
+      // If no playerName selected yet for the UI, set it to this
+      if (!playerName) playerName = nameInput;
+    }
+
+    function startGame() {
+      if (players.length < 2) { alert('Need at least 2 players'); return; }
+      totalRounds = parseInt(document.getElementById("roundsInput").value) || 3;
+      round = 1;
+      pickImpostor();
+      document.getElementById("setup").classList.add("hidden");
+      document.getElementById("game").classList.remove("hidden");
+      document.getElementById("roleText").textContent = playerName === impostor ? "You are the IMPOSTOR" : "You are FAITHFUL";
+      beginHints();
+    }
+
+    function pickImpostor() {
+      impostor = players[Math.floor(Math.random() * players.length)];
+      hints = [];
+    }
+
+    function beginHints() {
+      hintRound = 1;
+      hintIndex = 0;
+      hints = [];
+      votes = {};
+      document.getElementById("hintPhase").classList.remove("hidden");
+      document.getElementById("votePhase").classList.add("hidden");
+      document.getElementById("spinnerPhase").classList.add("hidden");
+      document.getElementById("revealPhase").classList.add("hidden");
+      showHintPlayer();
+    }
+
+    function showHintPlayer() {
+      document.getElementById("currentPlayer").textContent = `It's ${players[hintIndex]}'s turn`;
+      document.getElementById("hintInput").value = "";
+      startTimer(20, () => { submitHint(true); });
+    }
+
+    function startTimer(seconds, callback) {
+      let time = seconds;
+      document.getElementById("timerDisplay").textContent = `⏳ ${time}s`;
+      const interval = setInterval(() => {
+        time--;
+        document.getElementById("timerDisplay").textContent = `⏳ ${time}s`;
+        if (time <= 0) {
+          clearInterval(interval);
+          callback();
+        }
+      }, 1000);
+    }
+
+    function submitHint(fromTimeout = false) {
+      const hint = document.getElementById("hintInput").value.trim();
+      if (hint) hints.push(`${players[hintIndex]}: ${hint}`);
+      // advance
+      hintIndex++;
+      if (hintIndex >= players.length) {
+        hintIndex = 0;
+        hintRound++;
+        if (hintRound > 2) {
+          // move to voting
+          document.getElementById("hintPhase").classList.add("hidden");
+          document.getElementById("votePhase").classList.remove("hidden");
+          showVoteButtons();
+          return;
+        }
+      }
+      showHintPlayer();
+    }
+
+    function showVoteButtons() {
+      const container = document.getElementById("voteButtons");
+      container.innerHTML = "";
+      players.forEach(p => {
+        const btn = document.createElement("button");
+        btn.textContent = p;
+        btn.onclick = () => castVote(p);
+        container.appendChild(btn);
+      });
+    }
+
+    function castVote(name) {
+      if (!votes[name]) votes[name] = 0;
+      votes[name]++;
+      // Simple behavior: once votes have been cast by at least players.length voters (local), resolve.
+      const totalVotes = Object.values(votes).reduce((a,b)=>a+b,0);
+      if (totalVotes >= players.length) {
+        resolveVote();
+      } else {
+        // hide vote UI and wait for remaining votes (in local mode host can click others)
+        document.getElementById("votePhase").classList.add("hidden");
+        document.getElementById("spinnerPhase").classList.remove("hidden");
+        document.getElementById("spinnerResult").textContent = `Waiting for ${players.length - totalVotes} more votes...`;
+      }
+    }
+
+    function resolveVote() {
+      document.getElementById("spinnerPhase").classList.add("hidden");
+      // determine top votes
+      const entries = Object.entries(votes);
+      if (entries.length === 0) {
+        // no votes -> random
+        revealResult(null, 'No votes cast. Randomly choosing...');
+        return;
+      }
+      const max = Math.max(...entries.map(e => e[1]));
+      const top = entries.filter(e => e[1] === max).map(e => e[0]);
+      const chosen = top.length === 1 ? top[0] : top[Math.floor(Math.random() * top.length)];
+      if (top.length > 1) {
+        // show spinner briefly
+        document.getElementById("spinnerPhase").classList.remove("hidden");
+        document.getElementById("spinnerResult").textContent = `Tie between ${top.join(', ')} — choosing...`;
+        setTimeout(() => {
+          document.getElementById("spinnerPhase").classList.add("hidden");
+          revealResult(chosen, `Chosen: ${chosen}`);
+        }, 1500);
+      } else {
+        revealResult(chosen, `Chosen: ${chosen}`);
+      }
+    }
+
+    function revealResult(chosen, message) {
+      // scoring rules (simple): if chosen === impostor -> faithful +1; else impostor +1
+      if (chosen === impostor) {
+        // faithful win
+        players.forEach(p => { if (p !== impostor) scores[p] = (scores[p] || 0) + 1; });
+        document.getElementById("revealText").textContent = `Faithful win! ${impostor} was the IMPOSTOR.`;
+      } else if (chosen === null) {
+        // no one chosen, random outcome -> no points
+        document.getElementById("revealText").textContent = `No one was chosen. ${message}`;
+      } else {
+        // impostor survives
+        scores[impostor] = (scores[impostor] || 0) + 1;
+        document.getElementById("revealText").textContent = `Impostor wins this round! ${chosen} was voted but the IMPOSTOR was ${impostor}.`;
+      }
+
+      updateLeaderboard();
+
+      document.getElementById("hintPhase").classList.add("hidden");
+      document.getElementById("votePhase").classList.add("hidden");
+      document.getElementById("spinnerPhase").classList.add("hidden");
+      document.getElementById("revealPhase").classList.remove("hidden");
+    }
+
+    function updateLeaderboard() {
+      const el = document.getElementById("leaderboard");
+      el.innerHTML = "";
+      const sorted = Object.entries(scores).sort((a,b)=>b[1]-a[1]);
+      sorted.forEach(([name,score]) => {
+        const p = document.createElement('p');
+        p.textContent = `${name}: ${score}`;
+        el.appendChild(p);
+      });
+    }
+
+    function nextRound() {
+      round++;
+      if (round > totalRounds) {
+        // end game
+        document.getElementById("revealPhase").classList.add("hidden");
+        document.getElementById("game").classList.add("hidden");
+        document.getElementById("endGame").classList.remove("hidden");
+        updateLeaderboard();
+        return;
+      }
+      // reset for next round
+      pickImpostor();
+      document.getElementById("revealPhase").classList.add("hidden");
+      document.getElementById("hintPhase").classList.remove("hidden");
+      document.getElementById("roleText").textContent = playerName === impostor ? "You are the IMPOSTOR" : "You are FAITHFUL";
+      beginHints();
+    }
+  </script>
+</body>
+</html>

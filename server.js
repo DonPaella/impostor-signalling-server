@@ -2,14 +2,19 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 
+const path = require('path');
 const app = express();
+
+// Serve static client files from /public
+app.use(express.static(path.join(__dirname, 'public')));
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 let rooms = {};
 
 app.get("/", (req, res) => {
-  res.send("Signaling server is running");
+  // serve the game UI
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 wss.on("connection", (ws, req) => {
