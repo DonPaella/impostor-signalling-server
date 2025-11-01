@@ -63,219 +63,143 @@
   </div>
 
   <script>
-    // Simple client-only implementation (falls back to local-play) so the site can run without extra setup.
+    // WebSocket-based multiplayer client
+    const socket = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host);
 
-    // If you want to wire WebSocket multiplayer later, replace this with a proper server URL.
-    // const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
-
-    let gameCode = "";
-    let players = [];
-    let scores = {};
-    let playerName = "";
+    let myId = null;
+    let room = null;
     let isHost = false;
-    let impostor = "";
-    let round = 1;
-    let totalRounds = 3;
+    let players = []; // {id,name,score}
+    let order = [];
+    let turnIndex = 0;
     let hintRound = 1;
-    let hintIndex = 0;
-    let hints = [];
-    let votes = {};
+    let totalRounds = 3;
 
-    function hostGame() {
-      gameCode = Math.floor(10000000 + Math.random() * 90000000).toString();
-      isHost = true;
-      document.getElementById("menu").classList.add("hidden");
-      document.getElementById("setup").classList.remove("hidden");
-      document.getElementById("gameCodeDisplay").textContent = "Game Code: " + gameCode;
-    }
+    socket.addEventListener('open', () => { console.log('ws open'); });
+    socket.addEventListener('message', (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      handleMessage(msg);
+    });
 
-    function joinGame() {
-      gameCode = prompt("Enter game code:");
-      document.getElementById("menu").classList.add("hidden");
-      document.getElementById("setup").classList.remove("hidden");
-      document.getElementById("gameCodeDisplay").textContent = "Game Code: " + gameCode;
-    }
+    function send(msg) { socket.send(JSON.stringify(msg)); }
+
+    function hostGame() { isHost = true; document.getElementById('menu').classList.add('hidden'); document.getElementById('setup').classList.remove('hidden'); document.getElementById('gameCodeDisplay').textContent = 'Hosting...'; }
+
+    function joinGame() { isHost = false; const code = prompt('Enter game code:'); if (!code) return; room = code; document.getElementById('menu').classList.add('hidden'); document.getElementById('setup').classList.remove('hidden'); document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
 
     function submitPlayer() {
-      const nameInput = document.getElementById("playerName").value.trim();
-      if (!nameInput || players.includes(nameInput)) return;
-      players.push(nameInput);
-      scores[nameInput] = 0;
-      const p = document.createElement("p");
-      p.textContent = nameInput;
-      document.getElementById("playerList").appendChild(p);
-      document.getElementById("playerName").value = "";
-      // If no playerName selected yet for the UI, set it to this
-      if (!playerName) playerName = nameInput;
+      const name = document.getElementById('playerName').value.trim(); if (!name) return alert('Enter a name');
+      document.getElementById('playerName').value = '';
+      if (isHost) {
+        send({ type: 'create-room', payload: { name } });
+      } else {
+        if (!room) return alert('No game code');
+        send({ type: 'join-room', room, payload: { name } });
+      }
     }
 
     function startGame() {
-      if (players.length < 2) { alert('Need at least 2 players'); return; }
-      totalRounds = parseInt(document.getElementById("roundsInput").value) || 3;
-      round = 1;
-      pickImpostor();
-      document.getElementById("setup").classList.add("hidden");
-      document.getElementById("game").classList.remove("hidden");
-      document.getElementById("roleText").textContent = playerName === impostor ? "You are the IMPOSTOR" : "You are FAITHFUL";
-      beginHints();
+      if (!isHost) return;
+      totalRounds = parseInt(document.getElementById('roundsInput').value) || 3;
+      send({ type: 'start-game', room, payload: { rounds: totalRounds } });
     }
 
-    function pickImpostor() {
-      impostor = players[Math.floor(Math.random() * players.length)];
-      hints = [];
+    function submitHint() {
+      const text = document.getElementById('hintInput').value.trim(); if (!text) return; send({ type: 'submit-hint', room, payload: { text } });
+      document.getElementById('hintInput').value = '';
+      // advance local turn
+      advanceTurn();
     }
 
-    function beginHints() {
-      hintRound = 1;
-      hintIndex = 0;
-      hints = [];
-      votes = {};
-      document.getElementById("hintPhase").classList.remove("hidden");
-      document.getElementById("votePhase").classList.add("hidden");
-      document.getElementById("spinnerPhase").classList.add("hidden");
-      document.getElementById("revealPhase").classList.add("hidden");
-      showHintPlayer();
+    function advanceTurn() {
+      turnIndex++;
+      if (turnIndex >= order.length) { turnIndex = 0; hintRound++; if (hintRound > 2) { document.getElementById('hintPhase').classList.add('hidden'); document.getElementById('requestVote').classList.remove('hidden'); } }
+      renderTurn();
     }
 
-    function showHintPlayer() {
-      document.getElementById("currentPlayer").textContent = `It's ${players[hintIndex]}'s turn`;
-      document.getElementById("hintInput").value = "";
-      startTimer(20, () => { submitHint(true); });
+    function requestEndVote() { send({ type: 'request-end-vote', room }); }
+
+    function castVote(targetId) {
+      // show confirm
+      const ok = confirm('Submit vote for ' + (players.find(p=>p.id===targetId)||{}).name + '?'); if (!ok) return; send({ type: 'cast-vote', room, payload: { targetId } });
+      document.getElementById('votePhase').classList.add('hidden');
     }
 
-    function startTimer(seconds, callback) {
-      let time = seconds;
-      document.getElementById("timerDisplay").textContent = `⏳ ${time}s`;
-      const interval = setInterval(() => {
-        time--;
-        document.getElementById("timerDisplay").textContent = `⏳ ${time}s`;
-        if (time <= 0) {
-          clearInterval(interval);
-          callback();
-        }
-      }, 1000);
+    function submitTraitorGuess() {
+      const g = document.getElementById('traitorGuess').value.trim(); if (!g) return; send({ type: 'traitor-guess', room, payload: { guess: g } }); document.getElementById('traitorGuess').value = ''; document.getElementById('traitorGuessSection').classList.add('hidden');
     }
 
-    function submitHint(fromTimeout = false) {
-      const hint = document.getElementById("hintInput").value.trim();
-      if (hint) hints.push(`${players[hintIndex]}: ${hint}`);
-      // advance
-      hintIndex++;
-      if (hintIndex >= players.length) {
-        hintIndex = 0;
-        hintRound++;
-        if (hintRound > 2) {
-          // move to voting
-          document.getElementById("hintPhase").classList.add("hidden");
-          document.getElementById("votePhase").classList.remove("hidden");
-          showVoteButtons();
-          return;
-        }
+    function handleMessage(msg) {
+      const t = msg.type;
+      if (t === 'room-created') { room = msg.room; document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
+      else if (t === 'player-list') { players = msg.players; renderPlayerList(); }
+      else if (t === 'player-joined') { // optional
+        // no-op; player-list will update
       }
-      showHintPlayer();
-    }
-
-    function showVoteButtons() {
-      const container = document.getElementById("voteButtons");
-      container.innerHTML = "";
-      players.forEach(p => {
-        const btn = document.createElement("button");
-        btn.textContent = p;
-        btn.onclick = () => castVote(p);
-        container.appendChild(btn);
-      });
-    }
-
-    function castVote(name) {
-      if (!votes[name]) votes[name] = 0;
-      votes[name]++;
-      // Simple behavior: once votes have been cast by at least players.length voters (local), resolve.
-      const totalVotes = Object.values(votes).reduce((a,b)=>a+b,0);
-      if (totalVotes >= players.length) {
-        resolveVote();
-      } else {
-        // hide vote UI and wait for remaining votes (in local mode host can click others)
-        document.getElementById("votePhase").classList.add("hidden");
-        document.getElementById("spinnerPhase").classList.remove("hidden");
-        document.getElementById("spinnerResult").textContent = `Waiting for ${players.length - totalVotes} more votes...`;
+      else if (t === 'game-started') {
+        order = msg.order; turnIndex = 0; hintRound = 1; document.getElementById('setup').classList.add('hidden'); document.getElementById('game').classList.remove('hidden'); document.getElementById('hintPhase').classList.remove('hidden'); document.getElementById('requestVote').classList.add('hidden'); renderTurn(); document.getElementById('votePhase').classList.add('hidden'); document.getElementById('spinnerPhase').classList.add('hidden'); document.getElementById('revealPhase').classList.add('hidden');
       }
+      else if (t === 'role') {
+        if (msg.role === 'IMPOSTOR') { document.getElementById('roleText').textContent = 'You are the IMPOSTOR'; }
+        else { document.getElementById('roleText').textContent = 'You are FAITHFUL (secret: ' + msg.secret + ')'; }
+      }
+      else if (t === 'hint') {
+        const el = document.getElementById('playerList'); const p = document.createElement('p'); p.textContent = `${msg.from}: ${msg.text}`; el.appendChild(p);
+      }
+      else if (t === 'end-vote-status') {
+        document.getElementById('voteStatus').textContent = `Requests: ${msg.count}/${msg.needed}`;
+      }
+      else if (t === 'start-vote') {
+        document.getElementById('hintPhase').classList.add('hidden'); document.getElementById('requestVote').classList.add('hidden'); document.getElementById('votePhase').classList.remove('hidden'); renderVoteButtons(); startVoteTimer(msg.timeout || 20);
+      }
+      else if (t === 'vote-result') {
+        document.getElementById('votePhase').classList.add('hidden'); document.getElementById('spinnerPhase').classList.remove('hidden'); document.getElementById('spinnerResult').textContent = `Chosen: ${msg.chosenName || 'Unknown'}`;
+      }
+      else if (t === 'ask-traitor-guess') {
+        // show guess UI to this client
+        document.getElementById('traitorGuessSection').classList.remove('hidden');
+      }
+      else if (t === 'round-end') {
+        document.getElementById('spinnerPhase').classList.add('hidden'); document.getElementById('revealPhase').classList.remove('hidden');
+        let txt = '';
+        if (msg.result === 'traitor-guessed-correctly') txt = 'Traitor guessed correctly and wins this round!';
+        else if (msg.result === 'faithfuls-win') txt = 'Faithfuls win this round!';
+        else if (msg.result === 'impostor-survived') txt = 'Impostor survived and gets the point.';
+        document.getElementById('revealText').textContent = txt + ' Secret word: ' + msg.secret;
+        // update leaderboard display
+        const lb = document.getElementById('leaderboard'); lb.innerHTML = ''; (msg.scores||[]).forEach(s=>{ const p = document.createElement('p'); p.textContent = s.name + ': ' + s.score; lb.appendChild(p); });
+      }
+      else if (t === 'game-end') {
+        document.getElementById('game').classList.add('hidden'); document.getElementById('endGame').classList.remove('hidden'); const lb = document.getElementById('leaderboard'); lb.innerHTML = ''; (msg.leaderboard||[]).forEach(s=>{ const p = document.createElement('p'); p.textContent = s.name + ': ' + s.score; lb.appendChild(p); });
+      }
+      else if (t === 'player-list') { players = msg.players; renderPlayerList(); }
     }
 
-    function resolveVote() {
-      document.getElementById("spinnerPhase").classList.add("hidden");
-      // determine top votes
-      const entries = Object.entries(votes);
-      if (entries.length === 0) {
-        // no votes -> random
-        revealResult(null, 'No votes cast. Randomly choosing...');
-        return;
-      }
-      const max = Math.max(...entries.map(e => e[1]));
-      const top = entries.filter(e => e[1] === max).map(e => e[0]);
-      const chosen = top.length === 1 ? top[0] : top[Math.floor(Math.random() * top.length)];
-      if (top.length > 1) {
-        // show spinner briefly
-        document.getElementById("spinnerPhase").classList.remove("hidden");
-        document.getElementById("spinnerResult").textContent = `Tie between ${top.join(', ')} — choosing...`;
-        setTimeout(() => {
-          document.getElementById("spinnerPhase").classList.add("hidden");
-          revealResult(chosen, `Chosen: ${chosen}`);
-        }, 1500);
-      } else {
-        revealResult(chosen, `Chosen: ${chosen}`);
-      }
+    function renderPlayerList() {
+      const el = document.getElementById('playerList'); el.innerHTML = ''; players.forEach(p=>{ const pEl = document.createElement('p'); pEl.textContent = p.name + (p.score ? ' ('+p.score+')' : ''); el.appendChild(pEl); });
+      // if host, show start button
+      if (players.find(p => p.id === (room && room.hostId))) {}
     }
 
-    function revealResult(chosen, message) {
-      // scoring rules (simple): if chosen === impostor -> faithful +1; else impostor +1
-      if (chosen === impostor) {
-        // faithful win
-        players.forEach(p => { if (p !== impostor) scores[p] = (scores[p] || 0) + 1; });
-        document.getElementById("revealText").textContent = `Faithful win! ${impostor} was the IMPOSTOR.`;
-      } else if (chosen === null) {
-        // no one chosen, random outcome -> no points
-        document.getElementById("revealText").textContent = `No one was chosen. ${message}`;
-      } else {
-        // impostor survives
-        scores[impostor] = (scores[impostor] || 0) + 1;
-        document.getElementById("revealText").textContent = `Impostor wins this round! ${chosen} was voted but the IMPOSTOR was ${impostor}.`;
-      }
-
-      updateLeaderboard();
-
-      document.getElementById("hintPhase").classList.add("hidden");
-      document.getElementById("votePhase").classList.add("hidden");
-      document.getElementById("spinnerPhase").classList.add("hidden");
-      document.getElementById("revealPhase").classList.remove("hidden");
+    function renderTurn() {
+      if (!order || order.length === 0) return; const curId = order[turnIndex]; const curPlayer = players.find(p=>p.id===curId);
+      document.getElementById('currentPlayer').textContent = `It's ${curPlayer ? curPlayer.name : '...?'}'s turn (Round ${hintRound}/2)`;
+      const myPlayer = players.find(p=>p.wsId===myId);
+      // enable input only if it's my turn
+      const isMyTurn = curId === myId || false;
+      document.getElementById('hintInput').disabled = !isMyTurn; document.querySelector('#hintPhase button').disabled = !isMyTurn;
     }
 
-    function updateLeaderboard() {
-      const el = document.getElementById("leaderboard");
-      el.innerHTML = "";
-      const sorted = Object.entries(scores).sort((a,b)=>b[1]-a[1]);
-      sorted.forEach(([name,score]) => {
-        const p = document.createElement('p');
-        p.textContent = `${name}: ${score}`;
-        el.appendChild(p);
-      });
+    function renderVoteButtons() {
+      const container = document.getElementById('voteButtons'); container.innerHTML = ''; players.forEach(p=>{ const btn = document.createElement('button'); btn.textContent = p.name; btn.onclick = () => castVote(p.id); container.appendChild(btn); });
     }
 
-    function nextRound() {
-      round++;
-      if (round > totalRounds) {
-        // end game
-        document.getElementById("revealPhase").classList.add("hidden");
-        document.getElementById("game").classList.add("hidden");
-        document.getElementById("endGame").classList.remove("hidden");
-        updateLeaderboard();
-        return;
-      }
-      // reset for next round
-      pickImpostor();
-      document.getElementById("revealPhase").classList.add("hidden");
-      document.getElementById("hintPhase").classList.remove("hidden");
-      document.getElementById("roleText").textContent = playerName === impostor ? "You are the IMPOSTOR" : "You are FAITHFUL";
-      beginHints();
+    let voteTimerInterval = null;
+    function startVoteTimer(seconds) {
+      let time = seconds; document.getElementById('timerDisplay').textContent = `⏳ ${time}s`;
+      clearInterval(voteTimerInterval);
+      voteTimerInterval = setInterval(()=>{ time--; document.getElementById('timerDisplay').textContent = `⏳ ${time}s`; if (time<=0) clearInterval(voteTimerInterval); },1000);
     }
   </script>
 </body>
