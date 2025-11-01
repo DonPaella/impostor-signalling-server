@@ -88,21 +88,44 @@ wss.on('connection', (ws, req) => {
     if (type === 'start-game') {
       if (ws.id !== room.hostId) return send(ws, { type: 'error', error: 'not-host' });
       const rounds = (payload && payload.rounds) ? parseInt(payload.rounds) : 3;
-      room.totalRounds = rounds; room.round = 1; room.phase = 'playing'; room.hints = []; room.endVoteSet = new Set(); room.votes = {};
+      // initialize round and turn state
+      room.totalRounds = rounds;
+      room.round = 1;
+      room.phase = 'playing';
+      room.hints = [];
+      room.endVoteSet = new Set();
+      room.votes = {};
+      room.order = room.players.map(p => p.id).sort(() => Math.random() - 0.5);
+      room.turnIndex = 0; // index into order
+      room.hintPass = 1; // pass 1 or 2
       room.secretWord = chooseSecret();
       const impIndex = Math.floor(Math.random() * room.players.length);
       room.players.forEach((p, idx) => { p.role = (idx === impIndex) ? 'IMPOSTOR' : 'FAITHFUL'; });
-      room.players.forEach(p => { if (p.ws && p.ws.readyState === WebSocket.OPEN) { if (p.role === 'FAITHFUL') send(p.ws, { type: 'role', role: p.role, secret: room.secretWord }); else send(p.ws, { type: 'role', role: p.role }); } });
-      const order = room.players.map(p => p.id).sort(() => Math.random() - 0.5);
-      broadcastToRoom(roomCode, { type: 'game-started', round: room.round, totalRounds: room.totalRounds, order });
+      // send roles individually
+      room.players.forEach(p => {
+        if (p.ws && p.ws.readyState === WebSocket.OPEN) {
+          if (p.role === 'FAITHFUL') send(p.ws, { type: 'role', role: p.role, secret: room.secretWord });
+          else send(p.ws, { type: 'role', role: p.role });
+        }
+      });
+      broadcastToRoom(roomCode, { type: 'game-started', round: room.round, totalRounds: room.totalRounds, order: room.order });
+      // start first player's turn
+      startTurn(roomCode);
       return;
     }
 
     if (type === 'submit-hint') {
       if (room.phase !== 'playing') return;
       const player = room.players.find(p => p.id === ws.id); if (!player) return;
+      // enforce turn-based submission
+      if (!room.order || room.order[room.turnIndex] !== ws.id) return send(ws, { type: 'error', error: 'not-your-turn' });
       const text = payload && payload.text ? String(payload.text).trim() : '';
+      // cancel timers for this turn
+      if (room.turnTimer) { clearTimeout(room.turnTimer); room.turnTimer = null; }
+      if (room.turnGraceTimer) { clearTimeout(room.turnGraceTimer); room.turnGraceTimer = null; }
       if (text) { room.hints.push({ from: player.name, text }); broadcastToRoom(roomCode, { type: 'hint', from: player.name, text }); }
+      // advance the turn
+      advanceTurn(roomCode);
       return;
     }
 
@@ -139,11 +162,20 @@ wss.on('connection', (ws, req) => {
 });
 
 function resolveVotes(roomCode) {
-  const room = rooms[roomCode]; if (!room) return; const tally = {};
+  const room = rooms[roomCode]; if (!room) return;
+  const tally = {};
   Object.values(room.votes).forEach(tid => { tally[tid] = (tally[tid]||0)+1; });
   if (Object.keys(tally).length === 0) { const chosen = room.players[Math.floor(Math.random()*room.players.length)].id; finalizeVote(roomCode, chosen); return; }
   const max = Math.max(...Object.values(tally)); const top = Object.keys(tally).filter(id => tally[id] === max);
-  if (top.length === 1) finalizeVote(roomCode, top[0]); else { const chosen = top[Math.floor(Math.random()*top.length)]; finalizeVote(roomCode, chosen); }
+  if (top.length === 1) finalizeVote(roomCode, top[0]);
+  else {
+    // tie: broadcast tie so clients can show spinner, then resolve after short delay
+    broadcastToRoom(roomCode, { type: 'vote-tie', top });
+    setTimeout(() => {
+      const chosen = top[Math.floor(Math.random()*top.length)];
+      finalizeVote(roomCode, chosen);
+    }, 2500);
+  }
 }
 
 function finalizeVote(roomCode, chosenId) {
@@ -177,6 +209,67 @@ function revealRoundOutcome(roomCode, traitorGuessedCorrectly, chosenId) {
     room.players.forEach(p => { if (p.ws && p.ws.readyState === WebSocket.OPEN) { if (p.role === 'FAITHFUL') send(p.ws, { type: 'role', role: p.role, secret: room.secretWord }); else send(p.ws, { type: 'role', role: p.role }); } });
     const order = room.players.map(p => p.id).sort(() => Math.random() - 0.5); broadcastToRoom(roomCode, { type: 'game-started', round: room.round, totalRounds: room.totalRounds, order });
   }
+}
+
+// Turn management: start a player's turn, enforce timers, grace period and kicking
+function startTurn(roomCode) {
+  const room = rooms[roomCode]; if (!room) return;
+  if (!room.order || room.order.length === 0) return;
+  // ensure turnIndex in range
+  if (room.turnIndex >= room.order.length) room.turnIndex = 0;
+  const pid = room.order[room.turnIndex];
+  // notify clients who has the turn and time (20s)
+  broadcastToRoom(roomCode, { type: 'turn-start', playerId: pid, timeout: 20, hintPass: room.hintPass });
+  // notify the player specifically
+  const player = room.players.find(p => p.id === pid);
+  if (player && player.ws && player.ws.readyState === WebSocket.OPEN) send(player.ws, { type: 'your-turn', timeout: 20 });
+  // start 20s timer; if expires, give 10s grace, then kick
+  if (room.turnTimer) clearTimeout(room.turnTimer);
+  room.turnTimer = setTimeout(() => {
+    // notify grace
+    broadcastToRoom(roomCode, { type: 'turn-grace', playerId: pid, grace: 10 });
+    const p = room.players.find(p => p.id === pid);
+    if (p && p.ws && p.ws.readyState === WebSocket.OPEN) send(p.ws, { type: 'turn-grace', grace: 10 });
+    // start grace timer
+    if (room.turnGraceTimer) clearTimeout(room.turnGraceTimer);
+    room.turnGraceTimer = setTimeout(() => {
+      // kick player
+      kickPlayer(roomCode, pid, 'timeout');
+      // after kicking, continue with same turnIndex (since players list changed)
+      // if players remain, start next turn
+      const r = rooms[roomCode]; if (r && r.players.length > 0) startTurn(roomCode);
+    }, 10000);
+  }, 20000);
+}
+
+function advanceTurn(roomCode) {
+  const room = rooms[roomCode]; if (!room) return;
+  // advance index
+  room.turnIndex = (room.turnIndex + 1) % room.order.length;
+  // if completed a full pass
+  if (room.turnIndex === 0) {
+    if (room.hintPass === 1) { room.hintPass = 2; }
+    else {
+      // completed both passes; allow request-vote phase
+      broadcastToRoom(roomCode, { type: 'hints-complete' });
+      return;
+    }
+  }
+  // start next player's turn
+  startTurn(roomCode);
+}
+
+function kickPlayer(roomCode, playerId, reason) {
+  const room = rooms[roomCode]; if (!room) return;
+  const idx = room.players.findIndex(p => p.id === playerId);
+  if (idx === -1) return;
+  const [removed] = room.players.splice(idx,1);
+  // remove from order
+  room.order = room.order.filter(id => id !== playerId);
+  // adjust turnIndex if needed
+  if (room.turnIndex >= room.order.length) room.turnIndex = 0;
+  broadcastToRoom(roomCode, { type: 'player-kicked', id: playerId, name: removed.name, reason });
+  updatePlayerList(roomCode);
 }
 
 const PORT = process.env.PORT || 3000;

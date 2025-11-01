@@ -5,17 +5,26 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>IMPOSTOR Game</title>
   <style>
-    body { font-family: 'Segoe UI', sans-serif; text-align: center; background: #111; color: #eee; padding: 2em; }
-    input, button { padding: 0.5em 1em; margin: 0.5em; font-size: 1em; border-radius: 5px; border: none; }
-    button { background: #444; color: #fff; cursor: pointer; }
-    button:hover { background: #666; }
+    :root{ --bg:#0f1720; --card:#0b1220; --muted:#9aa4b2; --accent:#7c3aed; }
+    body { font-family: Inter, 'Segoe UI', system-ui, -apple-system, sans-serif; text-align: center; background: linear-gradient(180deg,#071024 0%, #0f1720 100%); color: #e6eef6; padding: 2em; }
+    .card{ background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.04); padding: 1rem 1.2rem; border-radius: 12px; display: inline-block; text-align:left; min-width:320px; }
+    input, button { padding: 0.55em 1em; margin: 0.4em; font-size: 1em; border-radius: 8px; border: none; }
+    input{ background: rgba(255,255,255,0.03); color: inherit; border: 1px solid rgba(255,255,255,0.04); }
+    button { background: linear-gradient(90deg,var(--accent),#3b82f6); color: #fff; cursor: pointer; box-shadow: 0 6px 18px rgba(124,58,237,0.12); border-radius:8px; }
+    button.secondary{ background: #222; box-shadow:none; }
+    button:active{ transform: translateY(1px); }
     .hidden { display: none; }
-    .fade { transition: opacity 0.5s ease-in-out; }
-    .spinner { animation: spin 2s linear infinite; display: inline-block; margin-top: 1em; }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .fade { transition: opacity 0.35s ease-in-out; }
     #playerList p { margin: 0.2em 0; }
-    #voteButtons button { display: inline-block; margin: 0.2em; }
+    #voteButtons button { display: inline-block; margin: 0.3em; }
     #leaderboard p { margin: 0.2em 0; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    /* spinner wheel */
+    .wheel{ width:220px; height:220px; border-radius:50%; position:relative; margin:0.6rem auto; transform: rotate(0deg); }
+    .wheel.spinning{ animation: spin 1s linear infinite; }
+    .wheel .label{ position:absolute; left:50%; top:50%; transform-origin: center -70px; font-size:0.9rem; color: #051; color: #e6eef6; }
+    .spinner-pointer{ width:0;height:0;border-left:12px solid transparent;border-right:12px solid transparent;border-bottom:18px solid var(--accent); margin:0 auto 0.6rem; }
+    .small-muted{ color:var(--muted); font-size:0.85rem; }
   </style>
 </head>
 <body>
@@ -26,12 +35,14 @@
     <button onclick="joinGame()">Join Game</button>
   </div>
 
-  <div id="setup" class="hidden">
+  <div id="setup" class="hidden card">
     <p id="gameCodeDisplay"></p>
     <input id="playerName" placeholder="Your name" />
     <button onclick="submitPlayer()">Join</button>
     <div id="playerList"></div>
-    <input id="roundsInput" type="number" value="3" min="1" />
+    <div style="margin-top:0.5rem"><label class="small-muted">HOW MANY ROUNDS</label><br/>
+    <input id="roundsInput" type="number" value="3" min="1" style="width:6rem" />
+    </div>
     <button onclick="startGame()">Start Game</button>
   </div>
 
@@ -57,10 +68,11 @@
       <h3>Vote for the IMPOSTOR</h3>
       <div id="voteButtons"></div>
     </div>
-    <div id="spinnerPhase" class="hidden">
-      <h3>🌀 Tie! Spinning...</h3>
-      <div class="spinner">🔄</div>
-      <p id="spinnerResult"></p>
+    <div id="spinnerPhase" class="hidden card">
+      <h3 style="margin-top:0">🌀 Tie! Spinning...</h3>
+      <div class="spinner-pointer"></div>
+      <div id="spinnerWheel" class="wheel"></div>
+      <p id="spinnerResult" class="small-muted"></p>
     </div>
     <div id="revealPhase" class="hidden">
       <h2 id="revealText"></h2>
@@ -142,12 +154,10 @@
 
     function handleMessage(msg) {
       const t = msg.type;
-  if (t === 'room-created') { room = msg.room; document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
-  else if (t === 'joined') { myId = msg.id; room = msg.room; document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
-  else if (t === 'player-list') { players = msg.players; window.hostId = msg.hostId; renderPlayerList(); }
-      else if (t === 'player-joined') { // optional
-        // no-op; player-list will update
-      }
+      if (t === 'room-created') { room = msg.room; document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
+      else if (t === 'joined') { myId = msg.id; room = msg.room; document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
+      else if (t === 'player-list') { players = msg.players; window.hostId = msg.hostId; renderPlayerList(); }
+      else if (t === 'player-joined') { /* no-op; player-list will refresh when server sends player-list */ }
       else if (t === 'game-started') {
         order = msg.order; turnIndex = 0; hintRound = 1; document.getElementById('setup').classList.add('hidden'); document.getElementById('game').classList.remove('hidden'); document.getElementById('hintPhase').classList.remove('hidden'); document.getElementById('requestVote').classList.add('hidden'); renderTurn(); document.getElementById('votePhase').classList.add('hidden'); document.getElementById('spinnerPhase').classList.add('hidden'); document.getElementById('revealPhase').classList.add('hidden');
       }
@@ -158,18 +168,69 @@
       else if (t === 'hint') {
         const el = document.getElementById('playerList'); const p = document.createElement('p'); p.textContent = `${msg.from}: ${msg.text}`; el.appendChild(p);
       }
+      else if (t === 'turn-start') {
+        // show who has the turn and start a countdown
+        const cur = msg.playerId; const curPlayer = players.find(p=>p.id===cur);
+        document.getElementById('currentPlayer').textContent = `It's ${curPlayer ? curPlayer.name : '...?'}'s turn (Pass ${msg.hintPass}/2)`;
+        startTurnTimer(msg.timeout || 20, cur === myId);
+        // enable/disable input based on whether it's our turn
+        const isMyTurn = (cur === myId);
+        document.getElementById('hintInput').disabled = !isMyTurn; document.querySelector('#hintPhase button').disabled = !isMyTurn;
+      }
+      else if (t === 'your-turn') {
+        // direct ping to enable controls (server authoritative)
+        document.getElementById('hintInput').disabled = false; document.querySelector('#hintPhase button').disabled = false;
+      }
+      else if (t === 'turn-grace') {
+        // show grace countdown
+        startTurnTimer(msg.grace || 10, msg.playerId === myId, true);
+      }
       else if (t === 'end-vote-status') {
         document.getElementById('voteStatus').textContent = `Requests: ${msg.count}/${msg.needed}`;
+      }
+      else if (t === 'hints-complete') {
+        document.getElementById('hintPhase').classList.add('hidden'); document.getElementById('requestVote').classList.remove('hidden');
       }
       else if (t === 'start-vote') {
         document.getElementById('hintPhase').classList.add('hidden'); document.getElementById('requestVote').classList.add('hidden'); document.getElementById('votePhase').classList.remove('hidden'); renderVoteButtons(); startVoteTimer(msg.timeout || 20);
       }
+      else if (t === 'vote-tie') {
+        // build spinner for tied players
+        window.voteTieTop = msg.top || [];
+        buildSpinner(window.voteTieTop);
+        document.getElementById('votePhase').classList.add('hidden'); document.getElementById('spinnerPhase').classList.remove('hidden');
+        const wheel = document.getElementById('spinnerWheel'); wheel.classList.add('spinning'); document.getElementById('spinnerResult').textContent = 'Spinning...';
+      }
       else if (t === 'vote-result') {
-        document.getElementById('votePhase').classList.add('hidden'); document.getElementById('spinnerPhase').classList.remove('hidden'); document.getElementById('spinnerResult').textContent = `Chosen: ${msg.chosenName || 'Unknown'}`;
+        // if there was a tie spinner, animate to the chosen
+        const chosenId = msg.chosenId; const chosenName = msg.chosenName || '';
+        if (window.voteTieTop && window.voteTieTop.length > 0) {
+          // animate wheel to land on chosen
+          const idx = window.voteTieTop.indexOf(chosenId);
+          const wheel = document.getElementById('spinnerWheel');
+          wheel.classList.remove('spinning');
+          const n = window.voteTieTop.length;
+          const anglePer = 360 / n;
+          const target = 360*3 + (idx * anglePer) + anglePer/2;
+          wheel.style.transition = 'transform 2s cubic-bezier(.2,.8,.2,1)';
+          wheel.style.transform = `rotate(${target}deg)`;
+          wheel.addEventListener('transitionend', function te(){
+            document.getElementById('spinnerResult').textContent = `Chosen: ${chosenName}`;
+            wheel.removeEventListener('transitionend', te);
+            // clear vote tie state
+            window.voteTieTop = null;
+          });
+        } else {
+          document.getElementById('votePhase').classList.add('hidden'); document.getElementById('spinnerPhase').classList.remove('hidden'); document.getElementById('spinnerResult').textContent = `Chosen: ${chosenName || 'Unknown'}`;
+        }
       }
       else if (t === 'ask-traitor-guess') {
         // show guess UI to this client
         document.getElementById('traitorGuessSection').classList.remove('hidden');
+      }
+      else if (t === 'player-kicked') {
+        alert(`${msg.name} was removed: ${msg.reason}`);
+        // server will send updated player-list
       }
       else if (t === 'round-end') {
         document.getElementById('spinnerPhase').classList.add('hidden'); document.getElementById('revealPhase').classList.remove('hidden');
@@ -184,7 +245,18 @@
       else if (t === 'game-end') {
         document.getElementById('game').classList.add('hidden'); document.getElementById('endGame').classList.remove('hidden'); const lb = document.getElementById('leaderboard'); lb.innerHTML = ''; (msg.leaderboard||[]).forEach(s=>{ const p = document.createElement('p'); p.textContent = s.name + ': ' + s.score; lb.appendChild(p); });
       }
-      else if (t === 'player-list') { players = msg.players; renderPlayerList(); }
+    }
+
+    // Turn timer handling on client
+    let turnTimerInterval = null;
+    function startTurnTimer(seconds, isMine, isGrace) {
+      clearInterval(turnTimerInterval);
+      let time = seconds;
+      document.getElementById('timerDisplay').textContent = `⏳ ${time}s`;
+      turnTimerInterval = setInterval(()=>{
+        time--; document.getElementById('timerDisplay').textContent = `⏳ ${time}s`;
+        if (time <= 0) { clearInterval(turnTimerInterval); if (isGrace && isMine) { alert('You were removed for timeout'); } }
+      }, 1000);
     }
 
     function renderPlayerList() {
@@ -203,6 +275,24 @@
 
     function renderVoteButtons() {
       const container = document.getElementById('voteButtons'); container.innerHTML = ''; players.forEach(p=>{ const btn = document.createElement('button'); btn.textContent = p.name; btn.onclick = () => castVote(p.id); container.appendChild(btn); });
+    }
+
+    function buildSpinner(topIds) {
+      const wheel = document.getElementById('spinnerWheel'); wheel.innerHTML = '';
+      if (!topIds || topIds.length === 0) return;
+      const n = topIds.length;
+      topIds.forEach((id, i) => {
+        const p = players.find(x=>x.id===id) || { name: id };
+        const label = document.createElement('div');
+        label.className = 'label';
+        const angle = (i * (360 / n));
+        label.style.transform = `rotate(${angle}deg) translateY(-70px)`;
+        label.textContent = p.name;
+        wheel.appendChild(label);
+      });
+      // reset transform
+      wheel.style.transition = '';
+      wheel.style.transform = 'rotate(0deg)';
     }
 
     let voteTimerInterval = null;
