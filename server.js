@@ -62,6 +62,8 @@ wss.on('connection', (ws, req) => {
       ws.room = room; ws.isHost = true; r.hostId = ws.id;
       updatePlayerList(room);
       send(ws, { type: 'room-created', room });
+      // notify the creator of their id/room
+      send(ws, { type: 'joined', id: ws.id, room });
       return;
     }
 
@@ -70,10 +72,12 @@ wss.on('connection', (ws, req) => {
       if (!room) return send(ws, { type: 'error', error: 'no-such-room' });
       const name = payload && payload.name ? payload.name : 'Player';
       if (room.players.find(p => p.name === name)) return send(ws, { type: 'error', error: 'name-taken' });
-      room.players.push({ id: ws.id, name, ws, score: 0 });
-      ws.room = roomCode; ws.isHost = (ws.id === room.hostId);
-      updatePlayerList(roomCode);
-      broadcastToRoom(roomCode, { type: 'player-joined', player: { id: ws.id, name } });
+  room.players.push({ id: ws.id, name, ws, score: 0 });
+  ws.room = roomCode; ws.isHost = (ws.id === room.hostId);
+  // acknowledge to joining client
+  send(ws, { type: 'joined', id: ws.id, room: roomCode });
+  updatePlayerList(roomCode);
+  broadcastToRoom(roomCode, { type: 'player-joined', player: { id: ws.id, name } });
       return;
     }
 

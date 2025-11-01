@@ -43,6 +43,16 @@
       <button onclick="submitHint()">Submit Hint</button>
       <p id="timerDisplay"></p>
     </div>
+    <div id="requestVote" class="hidden">
+      <button onclick="requestEndVote()">Request End & Vote</button>
+      <p id="voteStatus"></p>
+    </div>
+
+    <div id="traitorGuessSection" class="hidden">
+      <h3>Traitor: Guess the secret word</h3>
+      <input id="traitorGuess" placeholder="Enter your guess" />
+      <button onclick="submitTraitorGuess()">Submit Guess</button>
+    </div>
     <div id="votePhase" class="hidden">
       <h3>Vote for the IMPOSTOR</h3>
       <div id="voteButtons"></div>
@@ -132,8 +142,9 @@
 
     function handleMessage(msg) {
       const t = msg.type;
-      if (t === 'room-created') { room = msg.room; document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
-      else if (t === 'player-list') { players = msg.players; renderPlayerList(); }
+  if (t === 'room-created') { room = msg.room; document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
+  else if (t === 'joined') { myId = msg.id; room = msg.room; document.getElementById('gameCodeDisplay').textContent = 'Game Code: ' + room; }
+  else if (t === 'player-list') { players = msg.players; window.hostId = msg.hostId; renderPlayerList(); }
       else if (t === 'player-joined') { // optional
         // no-op; player-list will update
       }
@@ -178,16 +189,15 @@
 
     function renderPlayerList() {
       const el = document.getElementById('playerList'); el.innerHTML = ''; players.forEach(p=>{ const pEl = document.createElement('p'); pEl.textContent = p.name + (p.score ? ' ('+p.score+')' : ''); el.appendChild(pEl); });
-      // if host, show start button
-      if (players.find(p => p.id === (room && room.hostId))) {}
+      // show start button only to host
+      const startBtn = document.querySelector('button[onclick="startGame()"]');
+      if (myId && window.hostId && myId === window.hostId) startBtn.style.display = 'inline-block'; else startBtn.style.display = 'none';
     }
 
     function renderTurn() {
       if (!order || order.length === 0) return; const curId = order[turnIndex]; const curPlayer = players.find(p=>p.id===curId);
       document.getElementById('currentPlayer').textContent = `It's ${curPlayer ? curPlayer.name : '...?'}'s turn (Round ${hintRound}/2)`;
-      const myPlayer = players.find(p=>p.wsId===myId);
-      // enable input only if it's my turn
-      const isMyTurn = curId === myId || false;
+      const isMyTurn = curId === myId;
       document.getElementById('hintInput').disabled = !isMyTurn; document.querySelector('#hintPhase button').disabled = !isMyTurn;
     }
 
